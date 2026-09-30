@@ -13,7 +13,7 @@ from instaloader.exceptions import (
 
 
 # ============================================================
-# PAGE CONFIGURATION
+# PAGE CONFIG
 # ============================================================
 
 st.set_page_config(
@@ -30,16 +30,17 @@ st.set_page_config(
 st.title("📸 Instagram News Extractor")
 
 st.write(
-    "Extract public Instagram posts from a selected account "
-    "within a specific date range and export the results to Excel."
+    "Extract public Instagram posts within a selected date range "
+    "and export the results to Excel."
 )
 
 
 # ============================================================
-# CREATE INSTALOADER
+# INSTALOADER
 # ============================================================
 
-def create_instaloader():
+@st.cache_resource
+def create_loader():
 
     loader = instaloader.Instaloader(
         download_comments=False,
@@ -48,14 +49,38 @@ def create_instaloader():
         download_video_thumbnails=False,
         download_geotags=False,
         save_metadata=False,
-        compress_json=False
+        compress_json=False,
+        max_connection_attempts=1
     )
+
+    # --------------------------------------------------------
+    # Optional Instagram session
+    # --------------------------------------------------------
+
+    try:
+
+        if "instagram_session" in st.secrets:
+
+            session_data = st.secrets["instagram_session"]
+
+            if session_data.get("username") and session_data.get("session_file"):
+
+                username = session_data["username"]
+                session_file = session_data["session_file"]
+
+                loader.load_session(
+                    username,
+                    session_file
+                )
+
+    except Exception:
+        pass
 
     return loader
 
 
 # ============================================================
-# CLEAN INSTAGRAM USERNAME
+# CLEAN USERNAME
 # ============================================================
 
 def clean_username(value):
@@ -65,31 +90,27 @@ def clean_username(value):
     # Remove @
     value = value.replace("@", "")
 
-    # If a full Instagram URL was entered
+    # Convert full URL to username
     if "instagram.com/" in value:
 
         value = value.split("instagram.com/")[1]
 
-        # Remove query parameters
         value = value.split("?")[0]
 
-        # Remove fragments
         value = value.split("#")[0]
 
-    # Remove trailing slash
     value = value.strip("/")
 
-    # Keep only username
     value = value.split("/")[0]
 
     return value
 
 
 # ============================================================
-# EXCEL EXPORT
+# EXCEL
 # ============================================================
 
-def convert_to_excel(df):
+def create_excel(df):
 
     output = BytesIO()
 
@@ -106,7 +127,6 @@ def convert_to_excel(df):
 
         worksheet = writer.sheets["Instagram Posts"]
 
-        # Column widths
         worksheet.column_dimensions["A"].width = 25
         worksheet.column_dimensions["B"].width = 15
         worksheet.column_dimensions["C"].width = 18
@@ -119,7 +139,7 @@ def convert_to_excel(df):
 
 
 # ============================================================
-# USER INPUT
+# INPUT
 # ============================================================
 
 username_input = st.text_input(
@@ -127,16 +147,12 @@ username_input = st.text_input(
     placeholder=(
         "rakmediaoffice or "
         "https://www.instagram.com/rakmediaoffice/"
-    ),
-    help=(
-        "Enter either the Instagram username "
-        "or the full Instagram profile URL."
     )
 )
 
 
 # ============================================================
-# DATE INPUT
+# DATES
 # ============================================================
 
 today = date.today()
@@ -159,24 +175,17 @@ with col2:
 
 
 # ============================================================
-# EXTRACT BUTTON
+# BUTTON
 # ============================================================
 
-extract_button = st.button(
+if st.button(
     "🔎 Extract Posts",
     type="primary",
     use_container_width=True
-)
-
-
-# ============================================================
-# MAIN PROCESS
-# ============================================================
-
-if extract_button:
+):
 
     # --------------------------------------------------------
-    # Validate username
+    # Validation
     # --------------------------------------------------------
 
     if not username_input:
@@ -188,10 +197,6 @@ if extract_button:
         st.stop()
 
 
-    # --------------------------------------------------------
-    # Validate dates
-    # --------------------------------------------------------
-
     if start_date > end_date:
 
         st.error(
@@ -202,31 +207,31 @@ if extract_button:
 
 
     # --------------------------------------------------------
-    # Clean username
+    # Username
     # --------------------------------------------------------
 
     username = clean_username(username_input)
 
     st.info(
-        f"Instagram account: @{username}"
+        f"Searching Instagram account: @{username}"
     )
 
 
     # --------------------------------------------------------
-    # Create Instaloader
+    # Loader
     # --------------------------------------------------------
 
-    loader = create_instaloader()
+    loader = create_loader()
 
 
     try:
 
         # ----------------------------------------------------
-        # Find Instagram profile
+        # Profile
         # ----------------------------------------------------
 
         with st.spinner(
-            f"Connecting to Instagram account @{username}..."
+            f"Connecting to @{username}..."
         ):
 
             profile = instaloader.Profile.from_username(
@@ -241,54 +246,46 @@ if extract_button:
 
 
         # ----------------------------------------------------
-        # Extract posts
+        # Posts
         # ----------------------------------------------------
 
         posts = []
 
-        status = st.empty()
+        checked = 0
 
-        checked_posts = 0
+        status = st.empty()
 
 
         for post in profile.get_posts():
 
-            checked_posts += 1
+            checked += 1
 
             post_date = post.date.date()
 
-
             status.write(
-                f"Checking post {checked_posts}: {post_date}"
+                f"Checking post {checked}: {post_date}"
             )
 
 
-            # ------------------------------------------------
-            # Stop when posts become older than requested date
-            # ------------------------------------------------
-
+            # Instagram normally returns newest first.
+            # Stop when posts become older than start date.
             if post_date < start_date:
 
                 break
 
 
             # ------------------------------------------------
-            # Keep posts inside selected period
+            # Date filter
             # ------------------------------------------------
 
             if start_date <= post_date <= end_date:
 
-                # Determine type
                 try:
-
                     post_type = post.typename
-
                 except Exception:
-
                     post_type = "Unknown"
 
 
-                # Add post
                 posts.append(
                     {
                         "Account": username,
@@ -310,15 +307,11 @@ if extract_button:
 
 
         # ----------------------------------------------------
-        # Create DataFrame
+        # DataFrame
         # ----------------------------------------------------
 
         df = pd.DataFrame(posts)
 
-
-        # ----------------------------------------------------
-        # No posts found
-        # ----------------------------------------------------
 
         if df.empty:
 
@@ -331,7 +324,7 @@ if extract_button:
 
 
         # ----------------------------------------------------
-        # Sort newest first
+        # Sort
         # ----------------------------------------------------
 
         df = df.sort_values(
@@ -341,62 +334,41 @@ if extract_button:
 
 
         # ----------------------------------------------------
-        # Success message
+        # Results
         # ----------------------------------------------------
 
         st.success(
-            f"Found {len(df)} posts from @{username}"
+            f"Found {len(df)} posts."
         )
 
 
-        # ----------------------------------------------------
         # Summary
-        # ----------------------------------------------------
 
-        col1, col2, col3 = st.columns(3)
+        c1, c2, c3 = st.columns(3)
 
-
-        with col1:
+        with c1:
 
             st.metric(
                 "Posts",
                 len(df)
             )
 
-
-        with col2:
-
-            total_likes = int(
-                df["Likes"]
-                .fillna(0)
-                .sum()
-            )
+        with c2:
 
             st.metric(
-                "Total Likes",
-                total_likes
+                "Likes",
+                int(df["Likes"].fillna(0).sum())
             )
 
-
-        with col3:
-
-            total_comments = int(
-                df["Comments"]
-                .fillna(0)
-                .sum()
-            )
+        with c3:
 
             st.metric(
-                "Total Comments",
-                total_comments
+                "Comments",
+                int(df["Comments"].fillna(0).sum())
             )
 
 
-        # ----------------------------------------------------
-        # Display results
-        # ----------------------------------------------------
-
-        st.subheader("Extracted Posts")
+        # Table
 
         st.dataframe(
             df,
@@ -406,25 +378,20 @@ if extract_button:
 
 
         # ----------------------------------------------------
-        # Create Excel
+        # Excel
         # ----------------------------------------------------
 
-        excel_file = convert_to_excel(df)
-
+        excel_data = create_excel(df)
 
         filename = (
-            f"{username}_instagram_posts_"
+            f"{username}_instagram_news_"
             f"{start_date}_{end_date}.xlsx"
         )
 
 
-        # ----------------------------------------------------
-        # Download button
-        # ----------------------------------------------------
-
         st.download_button(
             label="⬇️ Download Excel",
-            data=excel_file,
+            data=excel_data,
             file_name=filename,
             mime=(
                 "application/vnd.openxmlformats-officedocument."
@@ -435,40 +402,34 @@ if extract_button:
 
 
     # ========================================================
-    # ERROR HANDLING
+    # ERRORS
     # ========================================================
 
     except TooManyRequestsException:
 
         st.error(
-            "Instagram temporarily blocked the request "
-            "(HTTP 429 – Too Many Requests)."
+            "Instagram returned HTTP 429 "
+            "(Too Many Requests)."
         )
 
         st.warning(
-            "Instagram is currently limiting automated access "
-            "from this server."
-        )
-
-        st.info(
-            "Please wait before trying again. "
-            "Do not repeatedly press Extract Posts."
+            "Instagram is temporarily limiting automated access. "
+            "Please wait before trying again."
         )
 
 
     except ProfileNotExistsException:
 
         st.error(
-            f"The Instagram account @{username} "
-            "could not be found."
+            f"Instagram account @{username} was not found."
         )
 
 
     except LoginRequiredException:
 
         st.error(
-            "Instagram requires authentication to access "
-            "this content."
+            "Instagram requires authentication "
+            "for this request."
         )
 
 
