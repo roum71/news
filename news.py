@@ -1,16 +1,9 @@
 import streamlit as st
 import pandas as pd
-import instaloader
+import requests
 
 from io import BytesIO
-from datetime import date, timedelta
-
-from instaloader.exceptions import (
-    ProfileNotExistsException,
-    TooManyRequestsException,
-    ConnectionException,
-    LoginRequiredException,
-)
+from datetime import date, timedelta, datetime
 
 
 # ============================================================
@@ -37,25 +30,35 @@ st.write(
 
 
 # ============================================================
-# CREATE INSTALOADER
+# API CONFIG
 # ============================================================
 
-@st.cache_resource
-def create_loader():
+API_URL = "https://api.instagapi.com/api/user/posts"
 
-    loader = instaloader.Instaloader(
-        download_comments=False,
-        download_pictures=False,
-        download_videos=False,
-        download_video_thumbnails=False,
-        download_geotags=False,
-        save_metadata=False,
-        compress_json=False,
-        max_connection_attempts=1,
-        request_timeout=30,
-    )
 
-    return loader
+# ============================================================
+# GET API KEY FROM STREAMLIT SECRETS
+# ============================================================
+
+def get_api_key():
+
+    try:
+
+        if "instagram" not in st.secrets:
+
+            return None
+
+        api_key = st.secrets["instagram"]["api_key"]
+
+        if not api_key:
+
+            return None
+
+        return api_key
+
+    except Exception:
+
+        return None
 
 
 # ============================================================
@@ -85,6 +88,52 @@ def clean_username(value):
     value = value.split("/")[0]
 
     return value
+
+
+# ============================================================
+# CONVERT INSTAGRAM DATE
+# ============================================================
+
+def parse_post_date(value):
+
+    if not value:
+        return None
+
+    try:
+
+        # Example:
+        # 2026-07-18T15:42:07Z
+
+        dt = datetime.fromisoformat(
+            value.replace("Z", "+00:00")
+        )
+
+        return dt.date()
+
+    except Exception:
+
+        return None
+
+
+# ============================================================
+# CONVERT POST TYPE
+# ============================================================
+
+def get_post_type(media_type):
+
+    if media_type == 1:
+
+        return "Photo"
+
+    elif media_type == 2:
+
+        return "Video"
+
+    elif media_type == 8:
+
+        return "Carousel"
+
+    return "Unknown"
 
 
 # ============================================================
@@ -120,14 +169,292 @@ def create_excel(df):
 
 
 # ============================================================
-# CREATE LOADER
+# API REQUEST
 # ============================================================
 
-loader = create_loader()
+def get_posts(
+    username,
+    start_date,
+    end_date,
+    api_key
+):
 
-st.success(
-    "🟢 Ready to search public Instagram posts."
-)
+    headers = {
+        "X-Api-Key": api_key
+    }
+
+    posts = []
+
+    pagination_token = None
+
+    page_number = 0
+
+    max_pages = 20
+
+    # --------------------------------------------------------
+    # Maximum pages is deliberately limited.
+    #
+    # Free InstaGapi plan has limited monthly requests.
+    # --------------------------------------------------------
+
+    while page_number < max_pages:
+
+        page_number += 1
+
+        params = {
+            "username_or_id": username
+        }
+
+        if pagination_token:
+
+            params["pagination_token"] = pagination_token
+
+
+        # ----------------------------------------------------
+        # API REQUEST
+        # ----------------------------------------------------
+
+        response = requests.get(
+            API_URL,
+            headers=headers,
+            params=params,
+            timeout=30
+        )
+
+
+        # ----------------------------------------------------
+        # HTTP ERROR
+        # ----------------------------------------------------
+
+        if response.status_code != 200:
+
+            try:
+
+                error_data = response.json()
+
+            except Exception:
+
+                error_data = response.text
+
+
+            raise Exception(
+                f"API Error {response.status_code}: "
+                f"{error_data}"
+            )
+
+
+        # ----------------------------------------------------
+        # JSON
+        # ----------------------------------------------------
+
+        data = response.json()
+
+
+        # ----------------------------------------------------
+        # DATA OBJECT
+        # ----------------------------------------------------
+
+        result = data.get("data", {})
+
+        items = result.get("items", [])
+
+
+        # ----------------------------------------------------
+        # No more posts
+        # ----------------------------------------------------
+
+        if not items:
+
+            break
+
+
+        # ----------------------------------------------------
+        # PROCESS POSTS
+        # ----------------------------------------------------
+
+        oldest_date_in_page = None
+
+
+        for item in items:
+
+            post_date = parse_post_date(
+                item.get("taken_at")
+            )
+
+
+            if not post_date:
+
+                continue
+
+
+            # Track oldest post in current page
+
+            if (
+                oldest_date_in_page is None
+                or post_date < oldest_date_in_page
+            ):
+
+                oldest_date_in_page = post_date
+
+
+            # ------------------------------------------------
+            # Skip posts newer than end date
+            # ------------------------------------------------
+
+            if post_date > end_date:
+
+                continue
+
+
+            # ------------------------------------------------
+            # Stop collecting older posts
+            # ------------------------------------------------
+
+            if post_date < start_date:
+
+                continue
+
+
+            # ------------------------------------------------
+            # TYPE
+            # ------------------------------------------------
+
+            post_type = get_post_type(
+                item.get("media_type")
+            )
+
+
+            # ------------------------------------------------
+            # CAPTION
+            # ------------------------------------------------
+
+            caption = (
+                item.get("caption_text")
+                or ""
+            )
+
+
+            # ------------------------------------------------
+            # LIKES
+            # ------------------------------------------------
+
+            likes = (
+                item.get("like_count")
+                or 0
+            )
+
+
+            # ------------------------------------------------
+            # COMMENTS
+            # ------------------------------------------------
+
+            comments = (
+                item.get("comment_count")
+                or 0
+            )
+
+
+            # ------------------------------------------------
+            # SHORTCODE
+            # ------------------------------------------------
+
+            shortcode = (
+                item.get("code")
+                or ""
+            )
+
+
+            # ------------------------------------------------
+            # URL
+            # ------------------------------------------------
+
+            if shortcode:
+
+                url = (
+                    "https://www.instagram.com/p/"
+                    + shortcode
+                    + "/"
+                )
+
+            else:
+
+                url = ""
+
+
+            # ------------------------------------------------
+            # ADD POST
+            # ------------------------------------------------
+
+            posts.append(
+                {
+                    "Account": username,
+                    "Date": post_date,
+                    "Type": post_type,
+                    "Caption": caption,
+                    "Likes": likes,
+                    "Comments": comments,
+                    "URL": url,
+                }
+            )
+
+
+        # ----------------------------------------------------
+        # Pagination
+        # ----------------------------------------------------
+
+        pagination_token = (
+            result.get("pagination_token")
+        )
+
+
+        # ----------------------------------------------------
+        # If there is no next page, stop
+        # ----------------------------------------------------
+
+        if not pagination_token:
+
+            break
+
+
+        # ----------------------------------------------------
+        # If the oldest post is already before start date,
+        # we have enough history.
+        # ----------------------------------------------------
+
+        if (
+            oldest_date_in_page is not None
+            and oldest_date_in_page < start_date
+        ):
+
+            break
+
+
+    return posts
+
+
+# ============================================================
+# API KEY STATUS
+# ============================================================
+
+api_key = get_api_key()
+
+
+if api_key:
+
+    st.success(
+        "🟢 InstaGapi API is configured."
+    )
+
+else:
+
+    st.error(
+        "🔴 InstaGapi API key is not configured."
+    )
+
+    st.info(
+        "Go to Streamlit Cloud → Settings → Secrets "
+        "and add your API key."
+    )
 
 
 # ============================================================
@@ -177,7 +504,20 @@ if st.button(
 ):
 
     # --------------------------------------------------------
-    # Validate username
+    # API KEY
+    # --------------------------------------------------------
+
+    if not api_key:
+
+        st.error(
+            "InstaGapi API key is missing."
+        )
+
+        st.stop()
+
+
+    # --------------------------------------------------------
+    # USERNAME
     # --------------------------------------------------------
 
     if not username_input:
@@ -190,7 +530,7 @@ if st.button(
 
 
     # --------------------------------------------------------
-    # Validate dates
+    # DATES
     # --------------------------------------------------------
 
     if start_date > end_date:
@@ -203,10 +543,13 @@ if st.button(
 
 
     # --------------------------------------------------------
-    # Clean username
+    # CLEAN USERNAME
     # --------------------------------------------------------
 
-    username = clean_username(username_input)
+    username = clean_username(
+        username_input
+    )
+
 
     if not username:
 
@@ -217,186 +560,27 @@ if st.button(
         st.stop()
 
 
+    # --------------------------------------------------------
+    # SEARCH
+    # --------------------------------------------------------
+
     st.info(
-        f"Searching Instagram account: @{username}"
+        f"Searching public Instagram posts for @{username}"
     )
 
 
-    # ========================================================
-    # INSTAGRAM
-    # ========================================================
-
     try:
 
-        # ----------------------------------------------------
-        # PROFILE
-        # ----------------------------------------------------
-
         with st.spinner(
-            f"Connecting to @{username}..."
+            f"Getting posts from @{username}..."
         ):
 
-            profile = instaloader.Profile.from_username(
-                loader.context,
-                username
+            posts = get_posts(
+                username=username,
+                start_date=start_date,
+                end_date=end_date,
+                api_key=api_key
             )
-
-
-        st.success(
-            f"Account found: @{username}"
-        )
-
-
-        # ----------------------------------------------------
-        # ACCOUNT INFORMATION
-        # ----------------------------------------------------
-
-        account_col1, account_col2, account_col3 = st.columns(3)
-
-        with account_col1:
-
-            st.metric(
-                "Followers",
-                f"{profile.followers:,}"
-            )
-
-        with account_col2:
-
-            st.metric(
-                "Following",
-                f"{profile.followees:,}"
-            )
-
-        with account_col3:
-
-            st.metric(
-                "Posts",
-                f"{profile.mediacount:,}"
-            )
-
-
-        # ====================================================
-        # POSTS
-        # ====================================================
-
-        posts = []
-
-        checked = 0
-
-        status = st.empty()
-
-
-        for post in profile.get_posts():
-
-            checked += 1
-
-            post_date = post.date.date()
-
-
-            status.write(
-                f"Checking post {checked}: {post_date}"
-            )
-
-
-            # ------------------------------------------------
-            # Instagram returns newest → oldest
-            #
-            # Once we go before the requested start date,
-            # there is no reason to continue.
-            # ------------------------------------------------
-
-            if post_date < start_date:
-
-                break
-
-
-            # ------------------------------------------------
-            # DATE FILTER
-            # ------------------------------------------------
-
-            if start_date <= post_date <= end_date:
-
-                # --------------------------------------------
-                # Post type
-                # --------------------------------------------
-
-                try:
-
-                    post_type = post.typename
-
-                except Exception:
-
-                    post_type = "Unknown"
-
-
-                # --------------------------------------------
-                # Caption
-                # --------------------------------------------
-
-                try:
-
-                    caption = post.caption or ""
-
-                except Exception:
-
-                    caption = ""
-
-
-                # --------------------------------------------
-                # Likes
-                # --------------------------------------------
-
-                try:
-
-                    likes = post.likes
-
-                except Exception:
-
-                    likes = 0
-
-
-                # --------------------------------------------
-                # Comments
-                # --------------------------------------------
-
-                try:
-
-                    comments = post.comments
-
-                except Exception:
-
-                    comments = 0
-
-
-                # --------------------------------------------
-                # URL
-                # --------------------------------------------
-
-                url = (
-                    "https://www.instagram.com/p/"
-                    + post.shortcode
-                    + "/"
-                )
-
-
-                # --------------------------------------------
-                # Add post
-                # --------------------------------------------
-
-                posts.append(
-                    {
-                        "Account": username,
-                        "Date": post_date,
-                        "Type": post_type,
-                        "Caption": caption,
-                        "Likes": likes,
-                        "Comments": comments,
-                        "URL": url,
-                    }
-                )
-
-
-        status.empty()
 
 
         # ====================================================
@@ -407,7 +591,7 @@ if st.button(
 
 
         # ----------------------------------------------------
-        # No results
+        # NO RESULTS
         # ----------------------------------------------------
 
         if df.empty:
@@ -421,7 +605,7 @@ if st.button(
 
 
         # ----------------------------------------------------
-        # Sort newest first
+        # SORT
         # ----------------------------------------------------
 
         df = df.sort_values(
@@ -439,9 +623,9 @@ if st.button(
         )
 
 
-        # ----------------------------------------------------
-        # Summary
-        # ----------------------------------------------------
+        # ====================================================
+        # SUMMARY
+        # ====================================================
 
         c1, c2, c3 = st.columns(3)
 
@@ -482,7 +666,9 @@ if st.button(
         # TABLE
         # ====================================================
 
-        st.subheader("Instagram Posts")
+        st.subheader(
+            "Instagram Posts"
+        )
 
         st.dataframe(
             df,
@@ -517,58 +703,71 @@ if st.button(
 
 
     # ========================================================
-    # ERRORS
+    # API ERRORS
     # ========================================================
-
-    except TooManyRequestsException:
-
-        st.error(
-            "Instagram returned HTTP 429 — Too Many Requests."
-        )
-
-        st.warning(
-            "Instagram is temporarily limiting automated "
-            "requests from this application."
-        )
-
-        st.info(
-            "No Instagram password or session is required "
-            "by this version of the app."
-        )
-
-
-    except ProfileNotExistsException:
-
-        st.error(
-            f"Instagram account @{username} was not found."
-        )
-
-
-    except LoginRequiredException:
-
-        st.error(
-            "Instagram requires login to access this account "
-            "or its posts."
-        )
-
-
-    except ConnectionException as e:
-
-        st.error(
-            "Could not connect to Instagram."
-        )
-
-        st.code(
-            str(e)
-        )
-
 
     except Exception as e:
 
-        st.error(
-            "An unexpected error occurred."
-        )
+        error_text = str(e)
 
-        st.code(
-            str(e)
-        )
+
+        # ----------------------------------------------------
+        # 401 / 403
+        # ----------------------------------------------------
+
+        if (
+            "401" in error_text
+            or "403" in error_text
+        ):
+
+            st.error(
+                "The InstaGapi API key was rejected."
+            )
+
+            st.info(
+                "Check that the API key in Streamlit "
+                "Secrets is correct and active."
+            )
+
+
+        # ----------------------------------------------------
+        # 404
+        # ----------------------------------------------------
+
+        elif "404" in error_text:
+
+            st.error(
+                f"Instagram account @{username} "
+                "could not be found."
+            )
+
+
+        # ----------------------------------------------------
+        # 429
+        # ----------------------------------------------------
+
+        elif "429" in error_text:
+
+            st.error(
+                "The InstaGapi request limit has been reached."
+            )
+
+            st.warning(
+                "The free InstaGapi plan has a limited "
+                "number of requests per month."
+            )
+
+
+        # ----------------------------------------------------
+        # OTHER
+        # ----------------------------------------------------
+
+        else:
+
+            st.error(
+                "Could not retrieve Instagram data."
+            )
+
+            st.code(
+                error_text
+            )
