@@ -4,6 +4,7 @@ import instaloader
 
 from io import BytesIO
 from datetime import date, timedelta
+
 from instaloader.exceptions import (
     ProfileNotExistsException,
     TooManyRequestsException,
@@ -36,7 +37,7 @@ st.write(
 
 
 # ============================================================
-# INSTALOADER
+# CREATE INSTALOADER
 # ============================================================
 
 @st.cache_resource
@@ -50,11 +51,12 @@ def create_loader():
         download_geotags=False,
         save_metadata=False,
         compress_json=False,
-        max_connection_attempts=1
+        max_connection_attempts=1,
+        request_timeout=30,
     )
 
     # --------------------------------------------------------
-    # Optional Instagram session
+    # Load saved Instagram session from Streamlit Secrets
     # --------------------------------------------------------
 
     try:
@@ -63,18 +65,21 @@ def create_loader():
 
             session_data = st.secrets["instagram_session"]
 
-            if session_data.get("username") and session_data.get("session_file"):
+            login_username = session_data.get("username")
+            session_file = session_data.get("session_file")
 
-                username = session_data["username"]
-                session_file = session_data["session_file"]
+            if login_username and session_file:
 
                 loader.load_session(
-                    username,
+                    login_username,
                     session_file
                 )
 
-    except Exception:
-        pass
+                st.session_state["instagram_logged_in"] = True
+
+    except Exception as e:
+
+        st.session_state["instagram_logged_in"] = False
 
     return loader
 
@@ -87,10 +92,8 @@ def clean_username(value):
 
     value = value.strip()
 
-    # Remove @
     value = value.replace("@", "")
 
-    # Convert full URL to username
     if "instagram.com/" in value:
 
         value = value.split("instagram.com/")[1]
@@ -139,6 +142,28 @@ def create_excel(df):
 
 
 # ============================================================
+# LOGIN STATUS
+# ============================================================
+
+loader = create_loader()
+
+if st.session_state.get("instagram_logged_in", False):
+
+    st.success("🟢 Instagram session is loaded.")
+
+else:
+
+    st.warning(
+        "🟡 No Instagram session is configured yet."
+    )
+
+    st.info(
+        "Create an Instagram session first, then add it to "
+        "Streamlit Secrets."
+    )
+
+
+# ============================================================
 # INPUT
 # ============================================================
 
@@ -175,7 +200,7 @@ with col2:
 
 
 # ============================================================
-# BUTTON
+# EXTRACT
 # ============================================================
 
 if st.button(
@@ -183,10 +208,6 @@ if st.button(
     type="primary",
     use_container_width=True
 ):
-
-    # --------------------------------------------------------
-    # Validation
-    # --------------------------------------------------------
 
     if not username_input:
 
@@ -207,6 +228,27 @@ if st.button(
 
 
     # --------------------------------------------------------
+    # Check Session
+    # --------------------------------------------------------
+
+    if not st.session_state.get(
+        "instagram_logged_in",
+        False
+    ):
+
+        st.error(
+            "Instagram session is not configured."
+        )
+
+        st.info(
+            "Please configure the Instagram session in "
+            "Streamlit Secrets first."
+        )
+
+        st.stop()
+
+
+    # --------------------------------------------------------
     # Username
     # --------------------------------------------------------
 
@@ -217,17 +259,10 @@ if st.button(
     )
 
 
-    # --------------------------------------------------------
-    # Loader
-    # --------------------------------------------------------
-
-    loader = create_loader()
-
-
     try:
 
         # ----------------------------------------------------
-        # Profile
+        # PROFILE
         # ----------------------------------------------------
 
         with st.spinner(
@@ -246,7 +281,7 @@ if st.button(
 
 
         # ----------------------------------------------------
-        # Posts
+        # POSTS
         # ----------------------------------------------------
 
         posts = []
@@ -267,8 +302,7 @@ if st.button(
             )
 
 
-            # Instagram normally returns newest first.
-            # Stop when posts become older than start date.
+            # Newest → oldest
             if post_date < start_date:
 
                 break
@@ -281,8 +315,11 @@ if st.button(
             if start_date <= post_date <= end_date:
 
                 try:
+
                     post_type = post.typename
+
                 except Exception:
+
                     post_type = "Unknown"
 
 
@@ -298,7 +335,7 @@ if st.button(
                             "https://www.instagram.com/p/"
                             + post.shortcode
                             + "/"
-                        )
+                        ),
                     }
                 )
 
@@ -307,7 +344,7 @@ if st.button(
 
 
         # ----------------------------------------------------
-        # DataFrame
+        # DATAFRAME
         # ----------------------------------------------------
 
         df = pd.DataFrame(posts)
@@ -324,7 +361,7 @@ if st.button(
 
 
         # ----------------------------------------------------
-        # Sort
+        # SORT
         # ----------------------------------------------------
 
         df = df.sort_values(
@@ -334,7 +371,7 @@ if st.button(
 
 
         # ----------------------------------------------------
-        # Results
+        # RESULTS
         # ----------------------------------------------------
 
         st.success(
@@ -342,9 +379,8 @@ if st.button(
         )
 
 
-        # Summary
-
         c1, c2, c3 = st.columns(3)
+
 
         with c1:
 
@@ -353,22 +389,34 @@ if st.button(
                 len(df)
             )
 
+
         with c2:
 
             st.metric(
                 "Likes",
-                int(df["Likes"].fillna(0).sum())
+                int(
+                    df["Likes"]
+                    .fillna(0)
+                    .sum()
+                )
             )
+
 
         with c3:
 
             st.metric(
                 "Comments",
-                int(df["Comments"].fillna(0).sum())
+                int(
+                    df["Comments"]
+                    .fillna(0)
+                    .sum()
+                )
             )
 
 
-        # Table
+        # ----------------------------------------------------
+        # TABLE
+        # ----------------------------------------------------
 
         st.dataframe(
             df,
@@ -378,7 +426,7 @@ if st.button(
 
 
         # ----------------------------------------------------
-        # Excel
+        # EXCEL
         # ----------------------------------------------------
 
         excel_data = create_excel(df)
@@ -408,13 +456,12 @@ if st.button(
     except TooManyRequestsException:
 
         st.error(
-            "Instagram returned HTTP 429 "
-            "(Too Many Requests)."
+            "Instagram returned HTTP 429 — Too Many Requests."
         )
 
         st.warning(
-            "Instagram is temporarily limiting automated access. "
-            "Please wait before trying again."
+            "Instagram is temporarily limiting this session. "
+            "Wait before retrying."
         )
 
 
@@ -428,8 +475,7 @@ if st.button(
     except LoginRequiredException:
 
         st.error(
-            "Instagram requires authentication "
-            "for this request."
+            "The Instagram session has expired or is invalid."
         )
 
 
