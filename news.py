@@ -122,22 +122,16 @@ if st.button("🧪 Test InstaGapi API Key", use_container_width=True):
             except Exception:
                 st.code(response.text)
 
-        elif response.status_code in [401, 403]:
+        elif if "401" in error_text or "403" in error_text:
 
-            st.error(
-                "❌ InstaGapi rejected the API key."
-            )
+    st.error("❌ InstaGapi rejected the Posts request.")
 
-            st.info(
-                """
-                The Streamlit Secret is being read, but InstaGapi
-                is rejecting the key.
+    st.warning(
+        "The API key itself passed the Profile test with HTTP 200. "
+        "So this is not necessarily a problem with your API key."
+    )
 
-                Check the API key in your InstaGapi dashboard.
-                Make sure you copied the API key itself and that
-                it starts with sk_live_.
-                """
-            )
+    st.code(error_text)
 
         elif response.status_code == 429:
 
