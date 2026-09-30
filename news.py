@@ -13,7 +13,7 @@ from instaloader.exceptions import (
 
 
 # ============================================================
-# PAGE CONFIG
+# PAGE CONFIGURATION
 # ============================================================
 
 st.set_page_config(
@@ -39,7 +39,6 @@ st.write(
 # CREATE INSTALOADER
 # ============================================================
 
-@st.cache_resource
 def create_instaloader():
 
     loader = instaloader.Instaloader(
@@ -49,9 +48,7 @@ def create_instaloader():
         download_video_thumbnails=False,
         download_geotags=False,
         save_metadata=False,
-        compress_json=False,
-        max_connection_attempts=1,
-        request_timeout=30
+        compress_json=False
     )
 
     return loader
@@ -68,19 +65,21 @@ def clean_username(value):
     # Remove @
     value = value.replace("@", "")
 
-    # If user entered a full Instagram URL
+    # If a full Instagram URL was entered
     if "instagram.com/" in value:
 
         value = value.split("instagram.com/")[1]
 
-        # Remove everything after username
+        # Remove query parameters
         value = value.split("?")[0]
+
+        # Remove fragments
         value = value.split("#")[0]
 
     # Remove trailing slash
     value = value.strip("/")
 
-    # Remove possible path elements
+    # Keep only username
     value = value.split("/")[0]
 
     return value
@@ -108,32 +107,37 @@ def convert_to_excel(df):
         worksheet = writer.sheets["Instagram Posts"]
 
         # Column widths
-        widths = {
-            "A": 22,
-            "B": 15,
-            "C": 18,
-            "D": 80,
-            "E": 12,
-            "F": 12,
-            "G": 60
-        }
-
-        for column, width in widths.items():
-            worksheet.column_dimensions[column].width = width
+        worksheet.column_dimensions["A"].width = 25
+        worksheet.column_dimensions["B"].width = 15
+        worksheet.column_dimensions["C"].width = 18
+        worksheet.column_dimensions["D"].width = 80
+        worksheet.column_dimensions["E"].width = 12
+        worksheet.column_dimensions["F"].width = 12
+        worksheet.column_dimensions["G"].width = 60
 
     return output.getvalue()
 
 
 # ============================================================
-# INPUT
+# USER INPUT
 # ============================================================
 
 username_input = st.text_input(
     "Instagram Username or URL",
-    placeholder="rakmediaoffice or https://www.instagram.com/rakmediaoffice/",
-    help="You can enter either the username or the full Instagram profile URL."
+    placeholder=(
+        "rakmediaoffice or "
+        "https://www.instagram.com/rakmediaoffice/"
+    ),
+    help=(
+        "Enter either the Instagram username "
+        "or the full Instagram profile URL."
+    )
 )
 
+
+# ============================================================
+# DATE INPUT
+# ============================================================
 
 today = date.today()
 
@@ -158,14 +162,21 @@ with col2:
 # EXTRACT BUTTON
 # ============================================================
 
-if st.button(
+extract_button = st.button(
     "🔎 Extract Posts",
     type="primary",
     use_container_width=True
-):
+)
+
+
+# ============================================================
+# MAIN PROCESS
+# ============================================================
+
+if extract_button:
 
     # --------------------------------------------------------
-    # Validate input
+    # Validate username
     # --------------------------------------------------------
 
     if not username_input:
@@ -177,6 +188,10 @@ if st.button(
         st.stop()
 
 
+    # --------------------------------------------------------
+    # Validate dates
+    # --------------------------------------------------------
+
     if start_date > end_date:
 
         st.error(
@@ -187,7 +202,7 @@ if st.button(
 
 
     # --------------------------------------------------------
-    # Convert URL to username
+    # Clean username
     # --------------------------------------------------------
 
     username = clean_username(username_input)
@@ -198,7 +213,7 @@ if st.button(
 
 
     # --------------------------------------------------------
-    # Create loader
+    # Create Instaloader
     # --------------------------------------------------------
 
     loader = create_instaloader()
@@ -207,11 +222,11 @@ if st.button(
     try:
 
         # ----------------------------------------------------
-        # Get profile
+        # Find Instagram profile
         # ----------------------------------------------------
 
         with st.spinner(
-            f"Connecting to Instagram: @{username}"
+            f"Connecting to Instagram account @{username}..."
         ):
 
             profile = instaloader.Profile.from_username(
@@ -233,37 +248,47 @@ if st.button(
 
         status = st.empty()
 
-        checked = 0
+        checked_posts = 0
 
 
         for post in profile.get_posts():
 
-            checked += 1
+            checked_posts += 1
 
             post_date = post.date.date()
 
+
             status.write(
-                f"Checking post {checked}: {post_date}"
+                f"Checking post {checked_posts}: {post_date}"
             )
 
 
-            # Instagram normally returns newest first.
-            # Stop once we reach posts older than the
-            # requested start date.
+            # ------------------------------------------------
+            # Stop when posts become older than requested date
+            # ------------------------------------------------
+
             if post_date < start_date:
 
                 break
 
 
-            # Only selected date range
+            # ------------------------------------------------
+            # Keep posts inside selected period
+            # ------------------------------------------------
+
             if start_date <= post_date <= end_date:
 
+                # Determine type
                 try:
+
                     post_type = post.typename
+
                 except Exception:
+
                     post_type = "Unknown"
 
 
+                # Add post
                 posts.append(
                     {
                         "Account": username,
@@ -285,14 +310,14 @@ if st.button(
 
 
         # ----------------------------------------------------
-        # Create dataframe
+        # Create DataFrame
         # ----------------------------------------------------
 
         df = pd.DataFrame(posts)
 
 
         # ----------------------------------------------------
-        # No results
+        # No posts found
         # ----------------------------------------------------
 
         if df.empty:
@@ -306,7 +331,7 @@ if st.button(
 
 
         # ----------------------------------------------------
-        # Sort
+        # Sort newest first
         # ----------------------------------------------------
 
         df = df.sort_values(
@@ -316,7 +341,7 @@ if st.button(
 
 
         # ----------------------------------------------------
-        # Summary
+        # Success message
         # ----------------------------------------------------
 
         st.success(
@@ -324,7 +349,12 @@ if st.button(
         )
 
 
+        # ----------------------------------------------------
+        # Summary
+        # ----------------------------------------------------
+
         col1, col2, col3 = st.columns(3)
+
 
         with col1:
 
@@ -333,24 +363,40 @@ if st.button(
                 len(df)
             )
 
+
         with col2:
+
+            total_likes = int(
+                df["Likes"]
+                .fillna(0)
+                .sum()
+            )
 
             st.metric(
                 "Total Likes",
-                int(df["Likes"].fillna(0).sum())
+                total_likes
             )
+
 
         with col3:
 
+            total_comments = int(
+                df["Comments"]
+                .fillna(0)
+                .sum()
+            )
+
             st.metric(
                 "Total Comments",
-                int(df["Comments"].fillna(0).sum())
+                total_comments
             )
 
 
         # ----------------------------------------------------
-        # Results table
+        # Display results
         # ----------------------------------------------------
+
+        st.subheader("Extracted Posts")
 
         st.dataframe(
             df,
@@ -360,7 +406,7 @@ if st.button(
 
 
         # ----------------------------------------------------
-        # Excel
+        # Create Excel
         # ----------------------------------------------------
 
         excel_file = convert_to_excel(df)
@@ -371,6 +417,10 @@ if st.button(
             f"{start_date}_{end_date}.xlsx"
         )
 
+
+        # ----------------------------------------------------
+        # Download button
+        # ----------------------------------------------------
 
         st.download_button(
             label="⬇️ Download Excel",
@@ -385,7 +435,7 @@ if st.button(
 
 
     # ========================================================
-    # ERRORS
+    # ERROR HANDLING
     # ========================================================
 
     except TooManyRequestsException:
@@ -396,9 +446,13 @@ if st.button(
         )
 
         st.warning(
+            "Instagram is currently limiting automated access "
+            "from this server."
+        )
+
+        st.info(
             "Please wait before trying again. "
-            "This is an Instagram access limitation, "
-            "not a problem with your username."
+            "Do not repeatedly press Extract Posts."
         )
 
 
