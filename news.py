@@ -6,7 +6,7 @@ from datetime import date, timedelta, datetime
 
 
 # =========================================================
-# PAGE SETTINGS
+# PAGE
 # =========================================================
 
 st.set_page_config(
@@ -16,6 +16,7 @@ st.set_page_config(
 )
 
 st.title("📸 Instagram News Extractor")
+
 st.write(
     "Extract public Instagram posts within a selected date range "
     "and export the results to Excel."
@@ -23,19 +24,21 @@ st.write(
 
 
 # =========================================================
-# INSTAGAPI SETTINGS
+# API SETTINGS
 # =========================================================
 
-API_URL = "https://api.instagapi.com/api/user/posts"
 PROFILE_URL = "https://api.instagapi.com/api/user/info"
+POSTS_URL = "https://api.instagapi.com/api/user/posts"
 
 
 # =========================================================
-# GET API KEY FROM STREAMLIT SECRETS
+# GET API KEY
 # =========================================================
 
 def get_api_key():
+
     try:
+
         if "instagram" not in st.secrets:
             return None
 
@@ -47,6 +50,7 @@ def get_api_key():
         return str(api_key).strip()
 
     except Exception:
+
         return None
 
 
@@ -58,37 +62,48 @@ api_key = get_api_key()
 # =========================================================
 
 if api_key:
-    st.success("🟢 InstaGapi API key loaded from Streamlit Secrets.")
 
-    # Show only the beginning of the key - NEVER show the full key
+    st.success("🟢 InstaGapi API key loaded.")
+
     st.caption(
-        f"Key detected: {api_key[:8]}..."
+        f"Detected key: {api_key[:8]}..."
     )
+
 else:
-    st.error("🔴 InstaGapi API key was not found.")
+
+    st.error(
+        "🔴 InstaGapi API key was not found."
+    )
 
     st.info(
         """
-        Go to:
+Use this exact format in Streamlit Cloud → Settings → Secrets:
 
-        Streamlit Cloud → Your App → Settings → Secrets
-
-        and use:
-
-        [instagram]
-        api_key = "sk_live_XXXXXXXX"
-        """
+[instagram]
+api_key = "sk_live_xxxxxxxxx"
+"""
     )
 
 
 # =========================================================
-# TEST API KEY
+# TEST PROFILE API
 # =========================================================
 
-if st.button("🧪 Test InstaGapi API Key", use_container_width=True):
+st.divider()
+
+st.subheader("🔧 API Diagnostics")
+
+if st.button(
+    "🧪 1. Test Profile API",
+    use_container_width=True
+):
 
     if not api_key:
-        st.error("The API key is not being read from Streamlit Secrets.")
+
+        st.error(
+            "API key is not being read from Streamlit Secrets."
+        )
+
         st.stop()
 
     headers = {
@@ -97,7 +112,7 @@ if st.button("🧪 Test InstaGapi API Key", use_container_width=True):
 
     try:
 
-        with st.spinner("Testing InstaGapi API key..."):
+        with st.spinner("Testing Profile API..."):
 
             response = requests.get(
                 PROFILE_URL,
@@ -108,53 +123,182 @@ if st.button("🧪 Test InstaGapi API Key", use_container_width=True):
                 timeout=30
             )
 
-        st.write("### API Test Result")
-        st.write("HTTP Status:", response.status_code)
+        st.write(
+            "**Profile API HTTP Status:**",
+            response.status_code
+        )
 
         if response.status_code == 200:
 
-            st.success("✅ API key is working.")
-
-            try:
-                result = response.json()
-                st.json(result)
-
-            except Exception:
-                st.code(response.text)
-
-        elif if "401" in error_text or "403" in error_text:
-
-    st.error("❌ InstaGapi rejected the Posts request.")
-
-    st.warning(
-        "The API key itself passed the Profile test with HTTP 200. "
-        "So this is not necessarily a problem with your API key."
-    )
-
-    st.code(error_text)
-
-        elif response.status_code == 429:
-
-            st.warning(
-                "⚠️ InstaGapi request limit has been reached."
+            st.success(
+                "✅ Profile API works. The API key is valid."
             )
 
-            st.code(response.text)
+            try:
+
+                profile_data = response.json()
+
+                # Show response for diagnosis
+                st.json(profile_data)
+
+            except Exception:
+
+                st.code(response.text)
 
         else:
 
             st.error(
-                f"Unexpected API response: {response.status_code}"
+                "❌ Profile API request failed."
             )
 
             try:
+
                 st.json(response.json())
+
             except Exception:
+
                 st.code(response.text)
 
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
 
-        st.error("Could not connect to InstaGapi.")
+        st.error(
+            "Could not connect to InstaGapi."
+        )
+
+        st.code(str(e))
+
+
+# =========================================================
+# TEST POSTS API
+# =========================================================
+
+if st.button(
+    "🧪 2. Test Instagram Posts API",
+    use_container_width=True
+):
+
+    if not api_key:
+
+        st.error(
+            "API key is not being read from Streamlit Secrets."
+        )
+
+        st.stop()
+
+    headers = {
+        "X-Api-Key": api_key
+    }
+
+    try:
+
+        with st.spinner("Testing Instagram Posts API..."):
+
+            response = requests.get(
+                POSTS_URL,
+                headers=headers,
+                params={
+                    "username_or_id": "rakmediaoffice"
+                },
+                timeout=30
+            )
+
+        st.write(
+            "**Posts API HTTP Status:**",
+            response.status_code
+        )
+
+        # -------------------------------------------------
+        # SUCCESS
+        # -------------------------------------------------
+
+        if response.status_code == 200:
+
+            st.success(
+                "✅ Posts API works."
+            )
+
+            try:
+
+                posts_test = response.json()
+
+                st.json(posts_test)
+
+            except Exception:
+
+                st.code(response.text)
+
+        # -------------------------------------------------
+        # AUTH ERROR
+        # -------------------------------------------------
+
+        elif response.status_code in [401, 403]:
+
+            st.error(
+                "❌ Posts API rejected the request."
+            )
+
+            st.warning(
+                """
+The Profile API already returned HTTP 200, so your API key
+is being accepted by InstaGapi.
+
+This error is specifically coming from the Posts API.
+"""
+            )
+
+            try:
+
+                error_data = response.json()
+
+                st.json(error_data)
+
+            except Exception:
+
+                st.code(response.text)
+
+        # -------------------------------------------------
+        # RATE LIMIT
+        # -------------------------------------------------
+
+        elif response.status_code == 429:
+
+            st.warning(
+                "⚠️ InstaGapi rate limit reached."
+            )
+
+            try:
+
+                st.json(response.json())
+
+            except Exception:
+
+                st.code(response.text)
+
+        # -------------------------------------------------
+        # OTHER
+        # -------------------------------------------------
+
+        else:
+
+            st.error(
+                f"Unexpected Posts API response: "
+                f"{response.status_code}"
+            )
+
+            try:
+
+                st.json(response.json())
+
+            except Exception:
+
+                st.code(response.text)
+
+    except Exception as e:
+
+        st.error(
+            "Could not connect to the Posts API."
+        )
+
         st.code(str(e))
 
 
@@ -163,6 +307,9 @@ if st.button("🧪 Test InstaGapi API Key", use_container_width=True):
 # =========================================================
 
 def clean_username(value):
+
+    if not value:
+        return ""
 
     value = value.strip()
 
@@ -194,11 +341,25 @@ def parse_post_date(value):
 
     try:
 
+        # ISO format
         dt = datetime.fromisoformat(
             str(value).replace("Z", "+00:00")
         )
 
         return dt.date()
+
+    except Exception:
+
+        pass
+
+    # Sometimes APIs may return Unix timestamp
+    try:
+
+        timestamp = int(value)
+
+        return datetime.fromtimestamp(
+            timestamp
+        ).date()
 
     except Exception:
 
@@ -214,17 +375,17 @@ def get_post_type(media_type):
     if media_type == 1:
         return "Photo"
 
-    elif media_type == 2:
+    if media_type == 2:
         return "Video"
 
-    elif media_type == 8:
+    if media_type == 8:
         return "Carousel"
 
     return "Unknown"
 
 
 # =========================================================
-# GET INSTAGRAM POSTS
+# GET POSTS
 # =========================================================
 
 def get_posts(
@@ -259,37 +420,46 @@ def get_posts(
             params["pagination_token"] = pagination_token
 
         response = requests.get(
-            API_URL,
+            POSTS_URL,
             headers=headers,
             params=params,
             timeout=30
         )
 
         # -------------------------------------------------
-        # API ERROR
+        # ERROR
         # -------------------------------------------------
 
         if response.status_code != 200:
 
             try:
+
                 error_data = response.json()
 
             except Exception:
+
                 error_data = response.text
 
             raise Exception(
-                f"API Error {response.status_code}: {error_data}"
+                f"HTTP {response.status_code}\n"
+                f"{error_data}"
             )
 
         # -------------------------------------------------
-        # READ RESPONSE
+        # RESPONSE
         # -------------------------------------------------
 
         data = response.json()
 
-        result = data.get("data", {})
+        result = data.get(
+            "data",
+            {}
+        )
 
-        items = result.get("items", [])
+        items = result.get(
+            "items",
+            []
+        )
 
         if not items:
 
@@ -298,7 +468,7 @@ def get_posts(
         oldest_date_in_page = None
 
         # -------------------------------------------------
-        # PROCESS POSTS
+        # POSTS
         # -------------------------------------------------
 
         for item in items:
@@ -308,6 +478,7 @@ def get_posts(
             )
 
             if not post_date:
+
                 continue
 
             if (
@@ -317,20 +488,26 @@ def get_posts(
 
                 oldest_date_in_page = post_date
 
-            # Post newer than selected end date
+            # Outside date range
+
             if post_date > end_date:
+
                 continue
 
-            # Post older than selected start date
             if post_date < start_date:
+
                 continue
 
             # -------------------------------------------------
-            # POST DATA
+            # DATA
             # -------------------------------------------------
+
+            media_type = item.get(
+                "media_type"
+            )
 
             post_type = get_post_type(
-                item.get("media_type")
+                media_type
             )
 
             caption = (
@@ -386,9 +563,12 @@ def get_posts(
         )
 
         if not pagination_token:
+
             break
 
-        # We reached posts older than the requested period
+        # Stop when posts become older
+        # than requested period
+
         if (
             oldest_date_in_page is not None
             and oldest_date_in_page < start_date
@@ -400,7 +580,7 @@ def get_posts(
 
 
 # =========================================================
-# CREATE EXCEL FILE
+# EXCEL
 # =========================================================
 
 def create_excel(df):
@@ -422,33 +602,54 @@ def create_excel(df):
             "Instagram Posts"
         ]
 
-        worksheet.column_dimensions["A"].width = 25
-        worksheet.column_dimensions["B"].width = 15
-        worksheet.column_dimensions["C"].width = 18
-        worksheet.column_dimensions["D"].width = 80
-        worksheet.column_dimensions["E"].width = 12
-        worksheet.column_dimensions["F"].width = 12
-        worksheet.column_dimensions["G"].width = 60
+        worksheet.column_dimensions[
+            "A"
+        ].width = 25
+
+        worksheet.column_dimensions[
+            "B"
+        ].width = 15
+
+        worksheet.column_dimensions[
+            "C"
+        ].width = 18
+
+        worksheet.column_dimensions[
+            "D"
+        ].width = 80
+
+        worksheet.column_dimensions[
+            "E"
+        ].width = 12
+
+        worksheet.column_dimensions[
+            "F"
+        ].width = 12
+
+        worksheet.column_dimensions[
+            "G"
+        ].width = 60
 
     return output.getvalue()
 
 
 # =========================================================
-# USER INPUT
+# EXTRACTION SECTION
 # =========================================================
 
 st.divider()
 
-st.subheader("Instagram Account")
+st.subheader("📸 Extract Instagram Posts")
 
 username_input = st.text_input(
     "Instagram Username or URL",
+    value="rakmediaoffice",
     placeholder="rakmediaoffice"
 )
 
 
 # =========================================================
-# DATE SELECTION
+# DATES
 # =========================================================
 
 today = date.today()
@@ -471,7 +672,7 @@ with col2:
 
 
 # =========================================================
-# EXTRACT BUTTON
+# EXTRACT
 # =========================================================
 
 if st.button(
@@ -480,23 +681,27 @@ if st.button(
     use_container_width=True
 ):
 
-    # -----------------------------------------------------
-    # CHECK API KEY
-    # -----------------------------------------------------
+    # -------------------------------------------------
+    # API KEY
+    # -------------------------------------------------
 
     if not api_key:
 
         st.error(
-            "InstaGapi API key is missing."
+            "API key is missing."
         )
 
         st.stop()
 
-    # -----------------------------------------------------
-    # CHECK USERNAME
-    # -----------------------------------------------------
+    # -------------------------------------------------
+    # USERNAME
+    # -------------------------------------------------
 
-    if not username_input:
+    username = clean_username(
+        username_input
+    )
+
+    if not username:
 
         st.error(
             "Please enter an Instagram username."
@@ -504,9 +709,9 @@ if st.button(
 
         st.stop()
 
-    # -----------------------------------------------------
-    # CHECK DATES
-    # -----------------------------------------------------
+    # -------------------------------------------------
+    # DATES
+    # -------------------------------------------------
 
     if start_date > end_date:
 
@@ -516,29 +721,14 @@ if st.button(
 
         st.stop()
 
-    # -----------------------------------------------------
-    # CLEAN USERNAME
-    # -----------------------------------------------------
-
-    username = clean_username(
-        username_input
-    )
-
-    if not username:
-
-        st.error(
-            "Invalid Instagram username."
-        )
-
-        st.stop()
-
     st.info(
-        f"Searching public Instagram posts for @{username}"
+        f"Searching public Instagram posts for "
+        f"@{username}"
     )
 
-    # -----------------------------------------------------
+    # -------------------------------------------------
     # GET POSTS
-    # -----------------------------------------------------
+    # -------------------------------------------------
 
     try:
 
@@ -557,7 +747,9 @@ if st.button(
         # DATAFRAME
         # -------------------------------------------------
 
-        df = pd.DataFrame(posts)
+        df = pd.DataFrame(
+            posts
+        )
 
         if df.empty:
 
@@ -575,19 +767,17 @@ if st.button(
         df = df.sort_values(
             by="Date",
             ascending=False
-        ).reset_index(drop=True)
+        ).reset_index(
+            drop=True
+        )
 
         # -------------------------------------------------
-        # SUCCESS
+        # SUMMARY
         # -------------------------------------------------
 
         st.success(
             f"✅ Found {len(df)} posts."
         )
-
-        # -------------------------------------------------
-        # METRICS
-        # -------------------------------------------------
 
         c1, c2, c3 = st.columns(3)
 
@@ -638,11 +828,14 @@ if st.button(
         # EXCEL
         # -------------------------------------------------
 
-        excel_data = create_excel(df)
+        excel_data = create_excel(
+            df
+        )
 
         filename = (
             f"{username}_instagram_news_"
-            f"{start_date}_{end_date}.xlsx"
+            f"{start_date}_"
+            f"{end_date}.xlsx"
         )
 
         st.download_button(
@@ -656,44 +849,20 @@ if st.button(
             use_container_width=True
         )
 
-    # -----------------------------------------------------
-    # ERRORS
-    # -----------------------------------------------------
+    # =====================================================
+    # ERROR HANDLING
+    # =====================================================
 
     except Exception as e:
 
-        error_text = str(e)
+        st.error(
+            "❌ Could not retrieve Instagram posts."
+        )
 
-        if (
-            "401" in error_text
-            or "403" in error_text
-        ):
+        st.warning(
+            "Detailed API response:"
+        )
 
-            st.error(
-                "❌ InstaGapi rejected the API key."
-            )
-
-            st.info(
-                "Please verify the API key in your InstaGapi dashboard."
-            )
-
-        elif "404" in error_text:
-
-            st.error(
-                f"Instagram account @{username} "
-                "could not be found."
-            )
-
-        elif "429" in error_text:
-
-            st.error(
-                "⚠️ InstaGapi request limit has been reached."
-            )
-
-        else:
-
-            st.error(
-                "Could not retrieve Instagram data."
-            )
-
-            st.code(error_text)
+        st.code(
+            str(e)
+        )
