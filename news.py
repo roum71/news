@@ -55,32 +55,6 @@ def create_loader():
         request_timeout=30,
     )
 
-    # --------------------------------------------------------
-    # Load saved Instagram session from Streamlit Secrets
-    # --------------------------------------------------------
-
-    try:
-
-        if "instagram_session" in st.secrets:
-
-            session_data = st.secrets["instagram_session"]
-
-            login_username = session_data.get("username")
-            session_file = session_data.get("session_file")
-
-            if login_username and session_file:
-
-                loader.load_session(
-                    login_username,
-                    session_file
-                )
-
-                st.session_state["instagram_logged_in"] = True
-
-    except Exception as e:
-
-        st.session_state["instagram_logged_in"] = False
-
     return loader
 
 
@@ -92,8 +66,10 @@ def clean_username(value):
 
     value = value.strip()
 
+    # Remove @
     value = value.replace("@", "")
 
+    # Handle Instagram URL
     if "instagram.com/" in value:
 
         value = value.split("instagram.com/")[1]
@@ -102,15 +78,17 @@ def clean_username(value):
 
         value = value.split("#")[0]
 
+    # Remove trailing /
     value = value.strip("/")
 
+    # Keep only username
     value = value.split("/")[0]
 
     return value
 
 
 # ============================================================
-# EXCEL
+# CREATE EXCEL
 # ============================================================
 
 def create_excel(df):
@@ -142,25 +120,14 @@ def create_excel(df):
 
 
 # ============================================================
-# LOGIN STATUS
+# CREATE LOADER
 # ============================================================
 
 loader = create_loader()
 
-if st.session_state.get("instagram_logged_in", False):
-
-    st.success("🟢 Instagram session is loaded.")
-
-else:
-
-    st.warning(
-        "🟡 No Instagram session is configured yet."
-    )
-
-    st.info(
-        "Create an Instagram session first, then add it to "
-        "Streamlit Secrets."
-    )
+st.success(
+    "🟢 Ready to search public Instagram posts."
+)
 
 
 # ============================================================
@@ -209,6 +176,10 @@ if st.button(
     use_container_width=True
 ):
 
+    # --------------------------------------------------------
+    # Validate username
+    # --------------------------------------------------------
+
     if not username_input:
 
         st.error(
@@ -217,6 +188,10 @@ if st.button(
 
         st.stop()
 
+
+    # --------------------------------------------------------
+    # Validate dates
+    # --------------------------------------------------------
 
     if start_date > end_date:
 
@@ -228,36 +203,28 @@ if st.button(
 
 
     # --------------------------------------------------------
-    # Check Session
+    # Clean username
     # --------------------------------------------------------
 
-    if not st.session_state.get(
-        "instagram_logged_in",
-        False
-    ):
+    username = clean_username(username_input)
+
+    if not username:
 
         st.error(
-            "Instagram session is not configured."
-        )
-
-        st.info(
-            "Please configure the Instagram session in "
-            "Streamlit Secrets first."
+            "Invalid Instagram username."
         )
 
         st.stop()
 
 
-    # --------------------------------------------------------
-    # Username
-    # --------------------------------------------------------
-
-    username = clean_username(username_input)
-
     st.info(
         f"Searching Instagram account: @{username}"
     )
 
+
+    # ========================================================
+    # INSTAGRAM
+    # ========================================================
 
     try:
 
@@ -281,8 +248,36 @@ if st.button(
 
 
         # ----------------------------------------------------
-        # POSTS
+        # ACCOUNT INFORMATION
         # ----------------------------------------------------
+
+        account_col1, account_col2, account_col3 = st.columns(3)
+
+        with account_col1:
+
+            st.metric(
+                "Followers",
+                f"{profile.followers:,}"
+            )
+
+        with account_col2:
+
+            st.metric(
+                "Following",
+                f"{profile.followees:,}"
+            )
+
+        with account_col3:
+
+            st.metric(
+                "Posts",
+                f"{profile.mediacount:,}"
+            )
+
+
+        # ====================================================
+        # POSTS
+        # ====================================================
 
         posts = []
 
@@ -297,22 +292,33 @@ if st.button(
 
             post_date = post.date.date()
 
+
             status.write(
                 f"Checking post {checked}: {post_date}"
             )
 
 
-            # Newest → oldest
+            # ------------------------------------------------
+            # Instagram returns newest → oldest
+            #
+            # Once we go before the requested start date,
+            # there is no reason to continue.
+            # ------------------------------------------------
+
             if post_date < start_date:
 
                 break
 
 
             # ------------------------------------------------
-            # Date filter
+            # DATE FILTER
             # ------------------------------------------------
 
             if start_date <= post_date <= end_date:
+
+                # --------------------------------------------
+                # Post type
+                # --------------------------------------------
 
                 try:
 
@@ -323,19 +329,69 @@ if st.button(
                     post_type = "Unknown"
 
 
+                # --------------------------------------------
+                # Caption
+                # --------------------------------------------
+
+                try:
+
+                    caption = post.caption or ""
+
+                except Exception:
+
+                    caption = ""
+
+
+                # --------------------------------------------
+                # Likes
+                # --------------------------------------------
+
+                try:
+
+                    likes = post.likes
+
+                except Exception:
+
+                    likes = 0
+
+
+                # --------------------------------------------
+                # Comments
+                # --------------------------------------------
+
+                try:
+
+                    comments = post.comments
+
+                except Exception:
+
+                    comments = 0
+
+
+                # --------------------------------------------
+                # URL
+                # --------------------------------------------
+
+                url = (
+                    "https://www.instagram.com/p/"
+                    + post.shortcode
+                    + "/"
+                )
+
+
+                # --------------------------------------------
+                # Add post
+                # --------------------------------------------
+
                 posts.append(
                     {
                         "Account": username,
                         "Date": post_date,
                         "Type": post_type,
-                        "Caption": post.caption or "",
-                        "Likes": post.likes,
-                        "Comments": post.comments,
-                        "URL": (
-                            "https://www.instagram.com/p/"
-                            + post.shortcode
-                            + "/"
-                        ),
+                        "Caption": caption,
+                        "Likes": likes,
+                        "Comments": comments,
+                        "URL": url,
                     }
                 )
 
@@ -343,12 +399,16 @@ if st.button(
         status.empty()
 
 
-        # ----------------------------------------------------
+        # ====================================================
         # DATAFRAME
-        # ----------------------------------------------------
+        # ====================================================
 
         df = pd.DataFrame(posts)
 
+
+        # ----------------------------------------------------
+        # No results
+        # ----------------------------------------------------
 
         if df.empty:
 
@@ -361,7 +421,7 @@ if st.button(
 
 
         # ----------------------------------------------------
-        # SORT
+        # Sort newest first
         # ----------------------------------------------------
 
         df = df.sort_values(
@@ -370,14 +430,18 @@ if st.button(
         ).reset_index(drop=True)
 
 
-        # ----------------------------------------------------
+        # ====================================================
         # RESULTS
-        # ----------------------------------------------------
+        # ====================================================
 
         st.success(
             f"Found {len(df)} posts."
         )
 
+
+        # ----------------------------------------------------
+        # Summary
+        # ----------------------------------------------------
 
         c1, c2, c3 = st.columns(3)
 
@@ -414,9 +478,11 @@ if st.button(
             )
 
 
-        # ----------------------------------------------------
+        # ====================================================
         # TABLE
-        # ----------------------------------------------------
+        # ====================================================
+
+        st.subheader("Instagram Posts")
 
         st.dataframe(
             df,
@@ -425,11 +491,12 @@ if st.button(
         )
 
 
-        # ----------------------------------------------------
+        # ====================================================
         # EXCEL
-        # ----------------------------------------------------
+        # ====================================================
 
         excel_data = create_excel(df)
+
 
         filename = (
             f"{username}_instagram_news_"
@@ -460,8 +527,13 @@ if st.button(
         )
 
         st.warning(
-            "Instagram is temporarily limiting this session. "
-            "Wait before retrying."
+            "Instagram is temporarily limiting automated "
+            "requests from this application."
+        )
+
+        st.info(
+            "No Instagram password or session is required "
+            "by this version of the app."
         )
 
 
@@ -475,7 +547,8 @@ if st.button(
     except LoginRequiredException:
 
         st.error(
-            "The Instagram session has expired or is invalid."
+            "Instagram requires login to access this account "
+            "or its posts."
         )
 
 
@@ -485,7 +558,9 @@ if st.button(
             "Could not connect to Instagram."
         )
 
-        st.code(str(e))
+        st.code(
+            str(e)
+        )
 
 
     except Exception as e:
@@ -494,4 +569,6 @@ if st.button(
             "An unexpected error occurred."
         )
 
-        st.code(str(e))
+        st.code(
+            str(e)
+        )
