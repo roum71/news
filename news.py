@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import requests
+import json
+import re
 from datetime import date, timedelta
 from io import BytesIO
 
@@ -23,23 +25,14 @@ st.set_page_config(
 st.title("📸 Instagram News Extractor")
 
 st.write(
-    "Extract public Instagram posts from an Instagram profile "
-    "and filter them by publication date."
+    "Extract public Instagram posts directly from an Instagram "
+    "profile page — no API key required."
 )
 
-
-# ---------------------------------------------------------
-# GET BRIGHT DATA TOKEN
-# ---------------------------------------------------------
-
-try:
-    API_TOKEN = st.secrets["brightdata"]["api_token"]
-except Exception:
-    st.error(
-        "Bright Data API token is missing. "
-        "Please add [brightdata] api_token in Streamlit Secrets."
-    )
-    st.stop()
+st.caption(
+    "Note: without logging in, Instagram only exposes the most "
+    "recent ~12 posts of a public profile."
+)
 
 
 # ---------------------------------------------------------
@@ -74,7 +67,7 @@ st.write(
 
 
 # ---------------------------------------------------------
-# CLEAN INSTAGRAM URL
+# CLEAN INSTAGRAM URL / USERNAME
 # ---------------------------------------------------------
 
 def build_instagram_url(value):
@@ -100,85 +93,190 @@ def build_instagram_url(value):
     return f"https://www.instagram.com/{value}/"
 
 
+def extract_username(value):
+
+    value = value.strip().lstrip("@")
+
+    if "instagram.com" in value:
+        parts = [p for p in value.split("/") if p]
+        if "instagram.com" in parts[0]:
+            if len(parts) > 1:
+                return parts[1]
+            return None
+        return None
+
+    return value.split("/")[0]
+
+
 # ---------------------------------------------------------
-# CALL BRIGHT DATA
+# SCRAPE INSTAGRAM PROFILE PAGE (NO API KEY)
 # ---------------------------------------------------------
 
-def get_instagram_posts(profile_url):
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;"
+        "q=0.9,image/avif,image/webp,*/*;q=0.8"
+    ),
+}
 
-    endpoint = (
-        "https://api.brightdata.com/datasets/v3/trigger"
-        "?dataset_id=gd_lk5ns7kz21pck8jpis"
-        "&format=json"
-        "&uncompressed_webhook=true"
+
+def fetch_profile_html(profile_url):
+
+    response = requests.get(
+        profile_url,
+        headers=HEADERS,
+        timeout=30
     )
 
-    headers = {
-        "Authorization": f"Bearer {API_TOKEN}",
-        "Content-Type": "application/json"
-    }
-
-    payload = [
-        {
-            "url": profile_url
-        }
-    ]
-
-    response = requests.post(
-        endpoint,
-        headers=headers,
-        json=payload,
-        timeout=180
-    )
+    if response.status_code == 404:
+        raise Exception("Profile not found (404). Check the username.")
 
     if response.status_code != 200:
         raise Exception(
-            f"Bright Data returned HTTP {response.status_code}: "
-            f"{response.text}"
+            f"Instagram returned HTTP {response.status_code}."
         )
 
-    return response.json()
+    return response.text
 
 
-# ---------------------------------------------------------
-# NORMALIZE RESPONSE
-# ---------------------------------------------------------
+def _decode_json_object(text, start_index):
+    """Decode the first balanced JSON object starting at or after
+    start_index. Returns (obj, end_index) or (None, -1)."""
 
-def normalize_posts(data):
+    decoder = json.JSONDecoder()
 
-    # Bright Data may return a list directly
-    if isinstance(data, list):
-        return data
+    while True:
 
-    # Some responses may contain data/results
-    if isinstance(data, dict):
+        brace = text.find("{", start_index)
 
-        for key in ["data", "results", "items", "records"]:
+        if brace == -1:
+            return None, -1
 
-            if key in data and isinstance(data[key], list):
-                return data[key]
-
-        # Single record
-        if "url" in data:
-            return [data]
-
-    return []
+        try:
+            obj, end = decoder.raw_decode(text[brace:])
+            return obj, brace + end
+        except json.JSONDecodeError:
+            start_index = brace + 1
 
 
-# ---------------------------------------------------------
-# EXTRACT FIELD SAFELY
-# ---------------------------------------------------------
+def extract_profile_json(html):
+    """Pull the embedded ProfilePage JSON out of Instagram's HTML."""
 
-def get_value(item, *keys):
+    # ---- Method 1: window._sharedData (older layout) ----
+    match = re.search(
+        r"window\._sharedData\s*=\s*(\{.*?\});",
+        html,
+        re.DOTALL
+    )
 
-    for key in keys:
+    if match:
+        try:
+            return json.loads(match.group(1))
+        except json.JSONDecodeError:
+            pass
 
-        value = item.get(key)
+    # ---- Method 2: JSON blobs inside script tags ----
+    for script in re.findall(
+        r"<script[^>]*>(.*?)</script>",
+        html,
+        re.DOTALL
+    ):
 
-        if value is not None:
-            return value
+        if '"ProfilePage"' not in script:
+            continue
+
+        # window.__additionalDataLoaded('/user/', { ... })
+        m = re.search(
+            r"__additionalDataLoaded\([^,]+,",
+            script
+        )
+        if m:
+            obj, _ = _decode_json_object(script, m.end())
+            if obj:
+                return obj
+
+        # Plain JSON script
+        obj, _ = _decode_json_object(script, 0)
+        if obj:
+            return obj
 
     return None
+
+
+def get_instagram_posts(profile_url):
+
+    html = fetch_profile_html(profile_url)
+
+    page_json = extract_profile_json(html)
+
+    if not page_json:
+        raise Exception(
+            "Could not read Instagram's page data. Instagram may be "
+            "serving a login wall to this server. Try again later or "
+            "from a different network."
+        )
+
+    # Navigate to the user node (works for both _sharedData and
+    # __additionalDataLoaded structures)
+    try:
+        profile_page = page_json["entry_data"]["ProfilePage"][0]
+        user = profile_page["graphql"]["user"]
+    except (KeyError, IndexError, TypeError):
+        raise Exception(
+            "Profile data not found on the page. The account may be "
+            "private, suspended, or Instagram changed its layout."
+        )
+
+    if not user:
+        raise Exception("The profile appears to be private or empty.")
+
+    username = user.get("username") or extract_username(profile_url)
+
+    media = (
+        user.get("edge_owner_to_timeline_media") or {}
+    )
+    edges = media.get("edges") or []
+
+    posts = []
+
+    for edge in edges:
+
+        node = edge.get("node") or {}
+
+        posts.append({
+            "shortcode": node.get("shortcode"),
+            "timestamp": node.get("taken_at_timestamp"),
+            "caption": _extract_caption(node),
+            "likes": (
+                (node.get("edge_media_preview_like") or {}).get("count")
+            ),
+            "comments": (
+                (node.get("edge_media_to_comment") or {}).get("count")
+            ),
+            "is_video": node.get("is_video", False),
+            "is_reel": node.get("__typename") == "XDTGraphVideo"
+                and "/reel/" in (node.get("url") or ""),
+            "username": username,
+        })
+
+    return posts, username
+
+
+def _extract_caption(node):
+
+    caption_data = node.get("edge_media_to_caption") or {}
+    edges = caption_data.get("edges") or []
+
+    if edges:
+        return (edges[0].get("node") or {}).get("text") or ""
+
+    return ""
 
 
 # ---------------------------------------------------------
@@ -198,22 +296,18 @@ if st.button("🔍 Extract Instagram Posts", type="primary"):
     with st.spinner("Collecting Instagram posts..."):
 
         try:
-
-            raw_data = get_instagram_posts(profile_url)
-
-            posts = normalize_posts(raw_data)
+            posts, found_username = get_instagram_posts(profile_url)
 
         except Exception as e:
-
             st.error("Unable to retrieve Instagram data.")
             st.code(str(e))
             st.stop()
 
 
     if not posts:
-
         st.warning(
-            "No posts were returned by Bright Data."
+            "No posts were found on the profile page. "
+            "The account may be private."
         )
         st.stop()
 
@@ -226,98 +320,34 @@ if st.button("🔍 Extract Instagram Posts", type="primary"):
 
     for post in posts:
 
-        # Date
-        raw_date = get_value(
-            post,
-            "date_posted",
-            "timestamp",
-            "date",
-            "taken_at"
-        )
+        raw_date = post.get("timestamp")
 
-        parsed_date = pd.to_datetime(
-            raw_date,
-            errors="coerce",
-            utc=True
-        )
-
-        if pd.isna(parsed_date):
+        if not raw_date:
             continue
 
-        post_date = parsed_date.date()
+        post_date = date.fromtimestamp(raw_date)
 
         # Date filtering
         if post_date < start_date or post_date > end_date:
             continue
 
+        shortcode = post.get("shortcode") or ""
 
-        # URL
-        post_url = get_value(
-            post,
-            "url",
-            "post_url"
-        )
-
-
-        # Caption
-        caption = get_value(
-            post,
-            "description",
-            "caption",
-            "caption_text"
-        )
-
-        if caption is None:
-            caption = ""
-
-
-        # Likes
-        likes = get_value(
-            post,
-            "likes",
-            "num_likes",
-            "like_count"
-        )
-
-        if likes is None:
-            likes = 0
-
-
-        # Comments
-        comments = get_value(
-            post,
-            "num_comments",
-            "comments",
-            "comment_count"
-        )
-
-        if comments is None:
-            comments = 0
-
-
-        # Username
-        user_posted = get_value(
-            post,
-            "user_posted",
-            "username",
-            "account"
-        )
-
-        # Type
-        post_type = "Post"
-
-        if post_url and "/reel/" in str(post_url):
+        if post.get("is_video") or post.get("is_reel"):
+            post_url = f"https://www.instagram.com/reel/{shortcode}/"
             post_type = "Reel"
-
+        else:
+            post_url = f"https://www.instagram.com/p/{shortcode}/"
+            post_type = "Post"
 
         records.append({
             "Date": post_date,
             "Type": post_type,
-            "Username": user_posted or "",
-            "Caption": caption,
-            "Likes": likes,
-            "Comments": comments,
-            "URL": post_url or ""
+            "Username": post.get("username") or "",
+            "Caption": post.get("caption") or "",
+            "Likes": post.get("likes") or 0,
+            "Comments": post.get("comments") or 0,
+            "URL": post_url,
         })
 
 
@@ -327,14 +357,11 @@ if st.button("🔍 Extract Instagram Posts", type="primary"):
 
     df = pd.DataFrame(records)
 
-
     if df.empty:
-
         st.warning(
             "Posts were retrieved, but none were within "
             "the selected date range."
         )
-
         st.stop()
 
 
@@ -365,22 +392,13 @@ if st.button("🔍 Extract Instagram Posts", type="primary"):
     c1, c2, c3 = st.columns(3)
 
     with c1:
-        st.metric(
-            "Posts",
-            total_posts
-        )
+        st.metric("Posts", total_posts)
 
     with c2:
-        st.metric(
-            "Likes",
-            f"{int(total_likes):,}"
-        )
+        st.metric("Likes", f"{int(total_likes):,}")
 
     with c3:
-        st.metric(
-            "Comments",
-            f"{int(total_comments):,}"
-        )
+        st.metric("Comments", f"{int(total_comments):,}")
 
 
     # -----------------------------------------------------
@@ -398,9 +416,7 @@ if st.button("🔍 Extract Instagram Posts", type="primary"):
                 "Post URL",
                 display_text="Open Post"
             ),
-            "Date": st.column_config.DateColumn(
-                "Date"
-            )
+            "Date": st.column_config.DateColumn("Date")
         }
     )
 
@@ -424,12 +440,13 @@ if st.button("🔍 Extract Instagram Posts", type="primary"):
 
     output.seek(0)
 
+    safe_name = (found_username or "profile").replace("@", "")
 
     st.download_button(
         label="📥 Download Excel",
         data=output,
         file_name=(
-            f"instagram_{username_input.replace('@', '')}_"
+            f"instagram_{safe_name}_"
             f"{start_date}_{end_date}.xlsx"
         ),
         mime=(
