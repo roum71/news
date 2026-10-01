@@ -3,6 +3,8 @@ import pandas as pd
 import requests
 import json
 import re
+import random
+import time
 from datetime import date, timedelta
 from io import BytesIO
 
@@ -67,6 +69,44 @@ st.write(
 
 
 # ---------------------------------------------------------
+# NETWORK OPTIONS (expandable)
+# ---------------------------------------------------------
+
+with st.expander("🌐 Network options (use these if you get HTTP 429)"):
+
+    ua_option = st.selectbox(
+        "User-Agent strategy",
+        options=[
+            "Rotate randomly (recommended)",
+            "Randomize every retry",
+        ],
+        index=0
+    )
+
+    proxy_input = st.text_input(
+        "Proxy (optional)",
+        placeholder="http://user:pass@host:port  or  socks5://host:port",
+        help="Instagram rate-limits by IP. A proxy gives you a different IP."
+    )
+
+    cookie_input = st.text_input(
+        "Instagram session cookie (optional)",
+        placeholder="sessionid=YOUR_SESSION_ID; ds_user_id=...",
+        help=(
+            "Paste your sessionid cookie from a logged-in browser. "
+            "This is the most reliable way to avoid 429 / login walls."
+        )
+    )
+
+    max_retries = st.slider(
+        "Max retries",
+        min_value=1,
+        max_value=5,
+        value=3
+    )
+
+
+# ---------------------------------------------------------
 # CLEAN INSTAGRAM URL / USERNAME
 # ---------------------------------------------------------
 
@@ -109,40 +149,136 @@ def extract_username(value):
 
 
 # ---------------------------------------------------------
+# USER-AGENT POOL (randomly selected, not a single hardcoded one)
+# ---------------------------------------------------------
+
+USER_AGENTS = [
+    # Chrome / Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    # Chrome / macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    # Safari / macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/16.6 Safari/605.1.15",
+    # Firefox / Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) "
+    "Gecko/20100101 Firefox/127.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) "
+    "Gecko/20100101 Firefox/125.0",
+    # Edge
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 "
+    "Edg/126.0.0.0",
+    # Mobile Chrome / Android
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+    # Mobile Safari / iPhone
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 "
+    "Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 "
+    "Mobile/15E148 Safari/604.1",
+]
+
+
+def build_headers(rotate_per_request):
+
+    if rotate_per_request:
+        ua = random.choice(USER_AGENTS)
+    else:
+        # One UA per extraction run, chosen at random
+        if "run_user_agent" not in st.session_state:
+            st.session_state["run_user_agent"] = random.choice(USER_AGENTS)
+        ua = st.session_state["run_user_agent"]
+
+    headers = {
+        "User-Agent": ua,
+        "Accept-Language": random.choice([
+            "en-US,en;q=0.9",
+            "en-GB,en;q=0.9",
+            "en;q=0.9",
+        ]),
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;"
+            "q=0.9,image/avif,image/webp,*/*;q=0.8"
+        ),
+        "Referer": "https://www.instagram.com/",
+    }
+
+    return headers
+
+
+# ---------------------------------------------------------
 # SCRAPE INSTAGRAM PROFILE PAGE (NO API KEY)
 # ---------------------------------------------------------
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept": (
-        "text/html,application/xhtml+xml,application/xml;"
-        "q=0.9,image/avif,image/webp,*/*;q=0.8"
-    ),
-}
+def fetch_profile_html(profile_url, proxy, cookie,
+                       rotate_per_request, max_retries):
 
+    proxies = None
 
-def fetch_profile_html(profile_url):
+    if proxy.strip():
+        proxies = {
+            "http": proxy.strip(),
+            "https": proxy.strip(),
+        }
 
-    response = requests.get(
-        profile_url,
-        headers=HEADERS,
-        timeout=30
+    last_error = None
+
+    for attempt in range(1, max_retries + 1):
+
+        headers = build_headers(rotate_per_request)
+
+        if cookie.strip():
+            headers["Cookie"] = cookie.strip()
+
+        try:
+
+            response = requests.get(
+                profile_url,
+                headers=headers,
+                proxies=proxies,
+                timeout=30
+            )
+
+            if response.status_code == 200:
+                return response.text
+
+            last_error = (
+                f"Instagram returned HTTP {response.status_code} "
+                f"(attempt {attempt}/{max_retries})"
+            )
+
+            # 404 will never succeed — don't retry it
+            if response.status_code == 404:
+                raise Exception("Profile not found (404). Check the username.")
+
+            # 429 / 403 — wait with backoff and try again
+            wait_seconds = attempt * random.uniform(2, 5)
+            time.sleep(wait_seconds)
+
+        except requests.RequestException as e:
+            last_error = f"Network error (attempt {attempt}): {e}"
+            time.sleep(attempt * random.uniform(2, 5))
+
+    raise Exception(
+        f"{last_error}. Instagram is rate-limiting this IP. "
+        f"Options: wait a few minutes, use a proxy, or paste a "
+        f"session cookie in Network options."
     )
-
-    if response.status_code == 404:
-        raise Exception("Profile not found (404). Check the username.")
-
-    if response.status_code != 200:
-        raise Exception(
-            f"Instagram returned HTTP {response.status_code}."
-        )
-
-    return response.text
 
 
 def _decode_json_object(text, start_index):
@@ -209,17 +345,24 @@ def extract_profile_json(html):
     return None
 
 
-def get_instagram_posts(profile_url):
+def get_instagram_posts(profile_url, proxy, cookie,
+                        rotate_per_request, max_retries):
 
-    html = fetch_profile_html(profile_url)
+    html = fetch_profile_html(
+        profile_url,
+        proxy,
+        cookie,
+        rotate_per_request,
+        max_retries
+    )
 
     page_json = extract_profile_json(html)
 
     if not page_json:
         raise Exception(
-            "Could not read Instagram's page data. Instagram may be "
-            "serving a login wall to this server. Try again later or "
-            "from a different network."
+            "Could not read Instagram's page data. Instagram is likely "
+            "serving a login wall to this IP (HTTP 429). Try: waiting "
+            "a few minutes, using a proxy, or pasting a session cookie."
         )
 
     # Navigate to the user node (works for both _sharedData and
@@ -293,10 +436,18 @@ if st.button("🔍 Extract Instagram Posts", type="primary"):
 
     st.info(f"Searching: {profile_url}")
 
+    rotate_per_request = (ua_option == "Randomize every retry")
+
     with st.spinner("Collecting Instagram posts..."):
 
         try:
-            posts, found_username = get_instagram_posts(profile_url)
+            posts, found_username = get_instagram_posts(
+                profile_url,
+                proxy_input,
+                cookie_input,
+                rotate_per_request,
+                max_retries
+            )
 
         except Exception as e:
             st.error("Unable to retrieve Instagram data.")
