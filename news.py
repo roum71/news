@@ -185,20 +185,67 @@ it expires — then just replace it once.
 """
     )
 
-    if st.button("🔎 Show my current IP"):
-        try:
-            ip = requests.get(
-                "https://api.ipify.org",
-                timeout=10
-            ).text
-            st.code(f"Current server IP: {ip}")
-            st.caption(
-                "If Instagram 429s this IP, every unauthenticated "
-                "request from this app will fail. Cookie or proxy "
-                "is required."
-            )
-        except Exception as e:
-            st.error(f"Could not determine IP: {e}")
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        if st.button("🔎 Show my current IP"):
+            try:
+                ip = requests.get(
+                    "https://api.ipify.org",
+                    timeout=10
+                ).text
+                st.code(f"Current server IP: {ip}")
+            except Exception as e:
+                st.error(f"Could not determine IP: {e}")
+
+    with col_b:
+        if st.button("🧪 Test Instagram connection"):
+            with st.spinner("Testing..."):
+                _cookie, _src = get_saved_cookie()
+                _test_headers = build_headers(False)
+                if _cookie:
+                    _test_headers["Cookie"] = _cookie
+                try:
+                    _r = requests.get(
+                        "https://www.instagram.com/",
+                        headers=_test_headers,
+                        timeout=30
+                    )
+                    st.write(f"HTTP status: **{_r.status_code}**")
+                    st.write(
+                        f"Cookie loaded: "
+                        f"**{'YES (from ' + _src + ')' if _cookie else 'NO'}**"
+                    )
+                    if _r.status_code == 200:
+                        if '"ProfilePage"' in _r.text or "_sharedData" in _r.text:
+                            st.success(
+                                "Instagram is serving real page data — "
+                                "extraction should work."
+                            )
+                        elif "login" in _r.text.lower():
+                            st.warning(
+                                "HTTP 200 but Instagram sent a LOGIN "
+                                "PAGE. Your cookie is missing, expired, "
+                                "or formatted wrong. It must be exactly: "
+                                "sessionid=THE_VALUE"
+                            )
+                        else:
+                            st.warning(
+                                "HTTP 200 but no page data recognized. "
+                                "Instagram may have changed its layout."
+                            )
+                    elif _r.status_code == 429:
+                        st.error(
+                            "Still 429 — this IP is blocked. The cookie "
+                            "must be set (see above) or use a proxy."
+                        )
+                    elif _r.status_code == 403:
+                        st.error(
+                            "403 Forbidden — Instagram rejected the "
+                            "request headers/cookie. Check cookie format."
+                        )
+                except Exception as e:
+                    st.error(f"Test failed: {e}")
 
 
 # ---------------------------------------------------------
@@ -547,6 +594,17 @@ if st.button("🔍 Extract Instagram Posts", type="primary"):
         except Exception as e:
             st.error("Unable to retrieve Instagram data.")
             st.code(str(e))
+            _ck, _ck_src = get_saved_cookie()
+            if not _ck and not cookie_input.strip():
+                st.warning(
+                    "No session cookie was loaded. If you saved it to "
+                    "Secrets or ig_session.txt, check the format — it "
+                    "must look like: sessionid=YOUR_VALUE and on "
+                    "Streamlit Cloud it must be set in the app's "
+                    "Settings → Secrets page, not a local file."
+                )
+            elif not _ck and cookie_input.strip():
+                st.caption("Cookie was taken from the text field.")
             st.stop()
 
 
