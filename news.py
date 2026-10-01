@@ -68,6 +68,41 @@ st.write(
 )
 
 
+
+# ---------------------------------------------------------
+# SAVED SESSION COOKIE (loaded automatically)
+# ---------------------------------------------------------
+# Priority: 1) Streamlit Secrets  2) ig_session.txt file
+# The cookie expires when you log out of Instagram or after
+# some weeks — then just update it once, not every run.
+# ---------------------------------------------------------
+
+COOKIE_FILE = "ig_session.txt"
+
+
+def get_saved_cookie():
+    """Load session cookie from secrets or a local file."""
+
+    # Option A: Streamlit Secrets
+    try:
+        secret_cookie = st.secrets["instagram"]["session_cookie"]
+        if secret_cookie:
+            return secret_cookie.strip(), "Streamlit Secrets"
+    except Exception:
+        pass
+
+    # Option B: plain text file next to the app
+    try:
+        with open(COOKIE_FILE, "r") as f:
+            file_cookie = f.read().strip()
+            if file_cookie:
+                return file_cookie, COOKIE_FILE
+    except Exception:
+        pass
+
+    return "", None
+
+
 # ---------------------------------------------------------
 # NETWORK OPTIONS (expandable)
 # ---------------------------------------------------------
@@ -89,12 +124,23 @@ with st.expander("🌐 Network options (use these if you get HTTP 429)"):
         help="Instagram rate-limits by IP. A proxy gives you a different IP."
     )
 
+    _saved_cookie, _saved_source = get_saved_cookie()
+
+    if _saved_cookie:
+        st.success(
+            f"✅ Session cookie loaded automatically from {_saved_source}"
+        )
+
     cookie_input = st.text_input(
         "Instagram session cookie (optional)",
+        value=_saved_cookie,
         placeholder="sessionid=YOUR_SESSION_ID; ds_user_id=...",
         help=(
             "Paste your sessionid cookie from a logged-in browser. "
-            "This is the most reliable way to avoid 429 / login walls."
+            "Save it once in Streamlit Secrets "
+            "[instagram] session_cookie=... or in a file named "
+            "ig_session.txt next to this app, and it will be "
+            "loaded automatically every run."
         )
     )
 
@@ -104,6 +150,55 @@ with st.expander("🌐 Network options (use these if you get HTTP 429)"):
         max_value=5,
         value=3
     )
+
+
+
+# ---------------------------------------------------------
+# DIAGNOSTICS
+# ---------------------------------------------------------
+
+with st.expander("🩺 Diagnostics — check which IP Instagram sees"):
+
+    st.write(
+        "A hard HTTP 429 means Instagram blocked your server's IP. "
+        "User-Agent rotation cannot fix an IP block. "
+        "Use the **session cookie** field (most reliable) or a **proxy**."
+    )
+
+    st.markdown(
+        """
+**How to get your session cookie (free):**
+1. Open instagram.com in your browser and log in.
+2. Press **F12** → **Application** tab → **Cookies** → `instagram.com`.
+3. Copy the value of the `sessionid` cookie.
+
+**Save it once — auto-loaded every run (pick one):**
+- **Secrets (recommended):** in your app folder, create
+  `.streamlit/secrets.toml` with:
+  `[instagram]`
+  `session_cookie = "sessionid=YOUR_VALUE"`
+- **File:** create `ig_session.txt` next to the app and put
+  `sessionid=YOUR_VALUE` in it.
+
+⚠️ The cookie stops working if you log out of Instagram or
+it expires — then just replace it once.
+"""
+    )
+
+    if st.button("🔎 Show my current IP"):
+        try:
+            ip = requests.get(
+                "https://api.ipify.org",
+                timeout=10
+            ).text
+            st.code(f"Current server IP: {ip}")
+            st.caption(
+                "If Instagram 429s this IP, every unauthenticated "
+                "request from this app will fail. Cookie or proxy "
+                "is required."
+            )
+        except Exception as e:
+            st.error(f"Could not determine IP: {e}")
 
 
 # ---------------------------------------------------------
